@@ -44,7 +44,7 @@ cd Equity-Research-Tool
 
 ### 5. Run the app
 ```streamlit run main.py```
-
+)
 ## Project Structure
 Equity-Research-Tool/
 ├── main.py                 # Main app
@@ -58,4 +58,4 @@ Reading multiple financial articles and remembering key points is hard. This too
 
 ## Connect
 
-GitHub: Sarthak50
+GitHub: [Saarthak50](https://github.com/Saarthak50)
