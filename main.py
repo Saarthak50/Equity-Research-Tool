@@ -1,74 +1,111 @@
 import os
-import streamlit as st
 import pickle
 import time
+
+import streamlit as st
+from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain.chains import RetrievalQAWithSourcesChain
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.document_loaders import UnstructuredURLLoader
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.vectorstores import FAISS
+from langchain_community.document_loaders import UnstructuredURLLoader
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
 
-from dotenv import load_dotenv
-load_dotenv()  # Load environment variables from .env (especially XAI_API_KEY)
+load_dotenv()
 
-st.title("Smart Equity News Insights 📈")
+st.set_page_config(page_title="Equity Research Tool")
+st.title("Equity Research Tool")
 st.sidebar.title("Article URLs")
 
-urls = []
-for i in range(3):
-    url = st.sidebar.text_input(f"URL {i+1}")
-    urls.append(url)
-
-process_url_clicked = st.sidebar.button("Process URLs")
-file_path = "faiss_store_grokai.pkl"
+FILE_PATH = "faiss_store_grokai.pkl"
+GROQ_MODEL = "openai/gpt-oss-120b"
 
 main_placeholder = st.empty()
-# Initialize ChatGroq with your Groq API key and a Grok model
-llm = ChatGroq(
-    api_key=os.getenv("GROQ_API_KEY"),
-    model_name="grok-1",
-    temperature=0.9,
-    max_tokens=500
-)
+
+
+@st.cache_resource(show_spinner=False)
+def get_embeddings():
+    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+
+@st.cache_resource(show_spinner=False)
+def get_llm():
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        st.error("GROQ_API_KEY not set. Add it to your .env file.")
+        st.stop()
+    return ChatGroq(api_key=api_key, model_name=GROQ_MODEL, temperature=0.9, max_tokens=500)
+
+
+if "url_count" not in st.session_state:
+    st.session_state.url_count = 3
+
+urls = []
+for i in range(st.session_state.url_count):
+    url = st.sidebar.text_input(f"URL {i + 1}", key=f"url_{i}")
+    if url:
+        urls.append(url)
+
+col1, col2 = st.sidebar.columns(2)
+if col1.button("Add URL"):
+    st.session_state.url_count += 1
+    st.rerun()
+if col2.button("Remove URL") and st.session_state.url_count > 1:
+    st.session_state.url_count -= 1
+    st.rerun()
+
+process_url_clicked = st.sidebar.button("Process URLs")
+llm = get_llm()
 
 if process_url_clicked:
-    # Load data
-    loader = UnstructuredURLLoader(urls=urls)
-    main_placeholder.text("Data Loading...Started...✅✅✅")
-    data = loader.load()
-    # Split data
-    text_splitter = RecursiveCharacterTextSplitter(
-        separators=['\n\n', '\n', '.', ','],
-        chunk_size=1000
-    )
-    main_placeholder.text("Text Splitter...Started...✅✅✅")
-    docs = text_splitter.split_documents(data)
-    # Create embeddings and save to FAISS index
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    vectorstore_grokai = FAISS.from_documents(docs, embeddings)
-    main_placeholder.text("Embedding Vector Started Building...✅✅✅")
-    time.sleep(2)
+    if not urls:
+        st.sidebar.error("Enter at least one URL.")
+    else:
+        try:
+            main_placeholder.text("Loading articles...")
+            data = UnstructuredURLLoader(urls=urls).load()
 
-    # Save the FAISS index to a pickle file
-    with open(file_path, "wb") as f:
-        pickle.dump(vectorstore_grokai, f)
+            if not data:
+                st.error("Could not extract content from the URLs provided.")
+            else:
+                splitter = RecursiveCharacterTextSplitter(
+                    separators=["\n\n", "\n", ".", ","], chunk_size=1000
+                )
+                docs = splitter.split_documents(data)
 
-query = main_placeholder.text_input("Question: ")
+                main_placeholder.text("Building embeddings...")
+                vectorstore = FAISS.from_documents(docs, get_embeddings())
+
+                with open(FILE_PATH, "wb") as f:
+                    pickle.dump(vectorstore, f)
+
+                main_placeholder.text("Ready. Ask a question below.")
+                time.sleep(1)
+                main_placeholder.empty()
+        except Exception as e:
+            st.error(f"Failed to process URLs: {e}")
+
+query = st.text_input("Question")
+
 if query:
-    if os.path.exists(file_path):
-        with open(file_path, "rb") as f:
-            vectorstore = pickle.load(f)
+    if not os.path.exists(FILE_PATH):
+        st.warning("Process some article URLs first.")
+    else:
+        try:
+            with open(FILE_PATH, "rb") as f:
+                vectorstore = pickle.load(f)
+
             chain = RetrievalQAWithSourcesChain.from_llm(llm=llm, retriever=vectorstore.as_retriever())
-            result = chain({"question": query}, return_only_outputs=True)
-            # Result will be a dictionary: {"answer": "", "sources": []}
+            result = chain.invoke({"question": query}, return_only_outputs=True)
+
             st.header("Answer")
             st.write(result["answer"])
 
-            # Display sources, if available
             sources = result.get("sources", "")
             if sources:
-                st.subheader("Sources:")
-                sources_list = sources.split("\n")  # Split the sources by newline
-                for source in sources_list:
-                    st.write(source)
+                st.subheader("Sources")
+                for source in sources.split("\n"):
+                    if source.strip():
+                        st.write(source)
+        except Exception as e:
+            st.error(f"Failed to answer question: {e}")
